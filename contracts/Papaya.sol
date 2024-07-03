@@ -241,7 +241,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
             _unsubscribeEffects(account, authors[i], encodedRates, true);
         }
 
-        if (!user.isLiquidatable(_liquidationThreshold(_subscriptions[account].length()))) revert NotLegal();
+        if (user.isLiquidatable(_liquidationThreshold(_subscriptions[account].length()))) revert NotLegal();
 
         int256 balance = user.drainBalance(users[_msgSender()], _liquidationThreshold(authors.length));
 
@@ -249,7 +249,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
         emit Liquidated(account, _msgSender());
     }
 
-    function onERC721Received(
+    function onERC721Received( //onStreamTranfered
         address operator, //to
         address from,
         uint256 tokenId,

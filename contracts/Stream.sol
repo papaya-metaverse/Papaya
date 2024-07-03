@@ -14,63 +14,64 @@ contract Stream is IStream, ERC721, Ownable {
         _;
     }
 
+    // modifier onlyPapaya() {
+        // if(_msgSender() != papaya_) revert AccessDenied();
+        // _;
+    // }
+
+    //onlyApproved надо исправить, лучше оставить бекдор для папайи
     constructor(
         string memory name_,
         string memory symbol_,
         address owner_
     ) ERC721(name_, symbol_) Ownable(owner_) {}
 
-    function safeMint(address to, uint256 tokenId) external onlyOwner onlyApproved(to) {
+    function safeMint(address to, uint256 tokenId) external onlyOwner {
         _safeMint(to, tokenId);
     }
 
     function burn(uint256 tokenId) external onlyOwner {
         _burn(tokenId);
-        _checkOnERC721Revoked(ownerOf(tokenId), address(0), tokenId, "");
-    }
-    //standart ERC721.transferFrom - banned
-    function transferFrom(address from, address to, uint256 tokenId) public override(ERC721, IERC721) {
-        super._safeTransfer(from, to, tokenId);
+        _checkOnERC721Revoked(ownerOf(tokenId), address(0), tokenId, ""); //Это нужно перенести в апдейт
     }
 
-    function _safeTransfer(
-        address from,
-        address to,
-        uint256 tokenId,
-        bytes memory data
-    ) internal override {
-        super._safeTransfer(from, to, tokenId, data);
-        _callOwner(from, to, tokenId, data);
+    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
+        address from = _ownerOf(tokenId);
+        super._update(to, tokenId, auth);
+        _callOwner(from, to, tokenId, "");
     }
 
-    function _checkOnERC721Revoked(
+    function _checkOnERC721Revoked( //Переделать исходя из идеи что стрим буквально не идет, а не по факту существования
         address from,
         address to,
         uint256 tokenId,
         bytes memory data
     ) private {
-        if (from.code.length > 0) {
-            try
-                IERC721ReceiverExtend(from).onERC721Revoked(
-                    _msgSender(),
-                    from,
-                    tokenId,
-                    data
-                )
-            returns (bytes4 retval) {
-                if (retval != IERC721ReceiverExtend.onERC721Revoked.selector) {
-                    revert IERC721ReceiverExtend.ERC721InvalidRevoker(from);
-                }
-            } catch (bytes memory reason) {
-                if (reason.length == 0) {
-                    revert IERC721ReceiverExtend.ERC721InvalidRevoker(from);
-                } else {
-                    /// @solidity memory-safe-assembly
-                    assembly {
-                        revert(add(32, reason), mload(reason))
-                    }
-                }
+        uint g0 = gasleft();
+        try
+            IERC721ReceiverExtend(from).onERC721Revoked/*{gaslimit: }*/(
+                _msgSender(),
+                from,
+                tokenId,
+                data
+            )
+        returns (bytes4 retval) {
+            // if (retval != IERC721ReceiverExtend.onERC721Revoked.selector) {
+            //     revert IERC721ReceiverExtend.ERC721InvalidRevoker(from);
+            // }
+        } catch (bytes memory reason) {
+            uint g1 = gasleft();
+            if(g0 - g1 < 300_000) {
+                revert IERC721ReceiverExtend.ERC721InvalidRevoker(from);
             }
+            // if (reason.length == 0) {
+            //     revert IERC721ReceiverExtend.ERC721InvalidRevoker(from);
+            // } else {
+            //     /// @solidity memory-safe-assembly
+            //     assembly {
+            //         revert(add(32, reason), mload(reason))
+            //     }
+            // }
         }
     }
 
@@ -80,7 +81,7 @@ contract Stream is IStream, ERC721, Ownable {
         uint256 tokenId,
         bytes memory data
     ) private {
-        IERC721ReceiverExtend(owner()).onERC721Received(
+        IERC721ReceiverExtend(owner()).onERC721Received( //Переписать метод, чтобы не дергать стандарт
             to,
             from,
             tokenId,
