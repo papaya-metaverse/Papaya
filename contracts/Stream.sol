@@ -5,8 +5,6 @@ import { IERC165, ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC
 import { Context } from "@openzeppelin/contracts/utils/Context.sol";
 
 import { IERC721Receiver } from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
-import { IERC721Metadata } from "@openzeppelin/contracts/tokens/ERC721/extentions/IERC721Metadata.sol";
-import { IERC721 } from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
 import { IStream } from "./interfaces/IStream.sol";
 import { IStreamReceiver } from "./interfaces/IStreamReceiver.sol";
@@ -14,19 +12,19 @@ import { IStreamRevoker } from "./interfaces/IStreamRevoker.sol";
 
 import { IPapaya } from "./interfaces/IPapaya.sol";
 
-contract Stream is Context, ERC165, IERC721, IERC721Metadata, IStream {
+contract Stream is Context, ERC165, IStream {
     address public immutable PAPAYA;
 
     // Token name
-    string private immutable _name;
+    string private _name;
 
     // Token symbol
-    string private immutable _symbol;
+    string private _symbol;
 
     uint256 constant STREAM_CALL_GAS_LIMIT = 300_000;
 
     modifier onlyPapaya() {
-        if(_msgSender() != papaya_) revert AccessDenied();
+        if(_msgSender() != PAPAYA) revert AccessDenied();
         _;
     }
 
@@ -43,12 +41,12 @@ contract Stream is Context, ERC165, IERC721, IERC721Metadata, IStream {
 
     function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, IERC165) returns (bool) {
         return interfaceId == type(IStream).interfaceId ||
-            interfaceId == type(IERC721Metadata).interfaceId ||
             super.supportsInterface(interfaceId);
     }
 
     function balanceOf(address owner) public view virtual returns (uint256) {
-        return IPapaya(PAPAYA).allSubscriptions(owner).length;
+        (address[] memory to, ) = IPapaya(PAPAYA).allSubscriptions(owner);
+        return to.length;
     }
 
     function ownerOf(uint256 tokenId) public view virtual returns (address) {
@@ -63,16 +61,18 @@ contract Stream is Context, ERC165, IERC721, IERC721Metadata, IStream {
         return _symbol;
     }
 
-    function tokenURI(uint256 tokenId) public view virtual returns (string memory) {
+    // function tokenURI(uint256 tokenId) public view virtual returns (string memory) {
         // _requireOwned(tokenId);
 
-        string memory baseURI = _baseURI();
-        return bytes(baseURI).length > 0 ? string.concat(baseURI, tokenId.toString()) : "";
-    }
+        // string memory baseURI = _baseURI();
+        // return bytes(baseURI).length > 0 ? string.concat(baseURI, tokenId.toString()) : "";
 
-    function _baseURI() internal view virtual returns (string memory) {
-        return "";
-    }
+    //     return _baseURI();
+    // }
+
+    // function _baseURI() internal view virtual returns (string memory) {
+    //     return "";
+    // }
 
     function safeMint(address to, uint256 tokenId) external onlyPapaya {
         _safeMint(to, tokenId);
@@ -83,24 +83,28 @@ contract Stream is Context, ERC165, IERC721, IERC721Metadata, IStream {
     }
 
     function transferFrom(address from, address to, uint256 tokenId) external {
-        address previousOwner = _update(to, tokenId, _msgSender());
-
-        if (previousOwner != from) revert AccessDenied(tokenId);
+        _transfer(from, to, tokenId);
     }
 
     function safeTransferFrom(address from, address to, uint256 tokenId) external {
-        safeTransferFrom(from, to, tokenId, "");
+        _transfer(from, to, tokenId);
     }
 
     function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external {
-        transferFrom(from, to, tokenId);
+        _transfer(from, to, tokenId);
+    }
+
+    function _transfer(address from, address to, uint256 tokenId) internal {
+        address previousOwner = _update(to, tokenId);
+
+        if (previousOwner != from) revert AccessDenied();
     }
 
     function _safeMint(address to, uint256 tokenId) internal {
         if (to == address(0)) {
             revert IStreamReceiver.IStreamInvalidReceiver(address(0));
         }
-        address previousOwner = _update(to, tokenId, address(0));
+        address previousOwner = _update(to, tokenId);
         if (previousOwner != address(0)) {
             revert IStreamInvalidSender(address(0));
         }
@@ -110,12 +114,12 @@ contract Stream is Context, ERC165, IERC721, IERC721Metadata, IStream {
         _update(address(0), tokenId);
     }
 
-    function _owner(uint256 tokenId) internal returns (address author) {
+    function _owner(uint256 tokenId) internal view returns (address author) {
         (author, ) = IPapaya(PAPAYA).subscriptionActors(tokenId);
     }
 
     function _update(address to, uint256 tokenId) internal virtual returns (address) {
-        address from = _ownerOf(tokenId);
+        address from = _owner(tokenId);
 
         // Execute the update
         if (from != address(0)) {
@@ -157,16 +161,16 @@ contract Stream is Context, ERC165, IERC721, IERC721Metadata, IStream {
         bytes4 selector = IStreamRevoker.onStreamRevoked.selector;
         uint256 gasLimit = STREAM_CALL_GAS_LIMIT;
         assembly ("memory-safe") { // solhint-disable-line no-inline-assembly
-            let prt := mload(0x40)
+            let ptr := mload(0x40)
             mstore(ptr, selector)
             mstore(add(ptr, 0x04), from)
             mstore(add(ptr, 0x24), to)
-            mstore(add(prt, 0x44), tokenId)
+            mstore(add(ptr, 0x44), tokenId)
 
             let gasLeft := gas()
             //Разве не 0х76?
             //Потому что 44 + 32 = 76
-            if iszero(call(gasLimit, from, 0, prt, 0x64, 0, 0)) {
+            if iszero(call(gasLimit, from, 0, ptr, 0x64, 0, 0)) {
                 //Зачем умножать на 63, а затем делить на 64?
                 //Выравнивание?
                 if lt(div(mul(gasLeft, 63), 64), gasLimit) {

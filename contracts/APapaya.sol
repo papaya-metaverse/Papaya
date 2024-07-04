@@ -22,7 +22,7 @@ contract APapaya is Papaya {
         address CHAIN_PRICE_FEED_,
         address TOKEN_PRICE_FEED_,
         address TOKEN_,
-        IStream streamNFT_,
+        address streamNFT_,
         ILendingPool LENDING_POOL_
     )
         Papaya(

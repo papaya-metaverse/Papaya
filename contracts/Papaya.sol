@@ -5,7 +5,6 @@ import { SafeERC20, IERC20 } from "@1inch/solidity-utils/contracts/libraries/Saf
 import { EnumerableMap } from "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
 import { PermitAndCall } from "@1inch/solidity-utils/contracts/mixins/PermitAndCall.sol";
 import { BySig, EIP712 } from "@1inch/solidity-utils/contracts/mixins/BySig.sol";
-import { IERC721Receiver } from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { SignedMath } from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 import { Context } from "@openzeppelin/contracts/utils/Context.sol";
@@ -16,11 +15,12 @@ import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/I
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 import { IStreamReceiver } from "./interfaces/IStreamReceiver.sol";
+import { IStreamInteraction } from "./interfaces/IStreamInteraction.sol";
 import "./interfaces/IPapaya.sol";
 import "./library/UserLib.sol";
 
 // NOTE: Default settings for projectId are stored in projectAdmin[projectId].settings
-contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IERC721Receiver {
+contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
     using SafeERC20 for IERC20;
     using UserLib for UserLib.User;
     using Address for address payable;
@@ -43,7 +43,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
     address[] public projectOwners;
     mapping(address account => UserLib.User) public users;
 
-    IStream public immutable streamNFT;
+    address public immutable streamNFT;
     uint32 private _subscriptionId;
     mapping(uint256 encodeId => SubActors) public encodedSubscribers;
     mapping(address account => EnumerableMap.AddressToUintMap) private _subscriptions;
@@ -82,7 +82,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
         address CHAIN_PRICE_FEED_,
         address TOKEN_PRICE_FEED_,
         address TOKEN_,
-        IStream streamNFT_
+        address streamNFT_
     )
         Ownable(_msgSender())
         EIP712(type(Papaya).name, "1")
@@ -156,9 +156,10 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
         return _subscriptions[from].tryGet(to);
     }
 
-    function subscriptionActors(uint256 subscriptionId) external view returns (address, address) (
-        return encodedSubscribers[subscriptionId];
-    )
+    function subscriptionActors(uint256 subscriptionId) external view returns (address author, address user) {
+        author = encodedSubscribers[subscriptionId].author;
+        user = encodedSubscribers[subscriptionId].subscriber;
+    }
 
     function allSubscriptions(address from) external view returns(address[] memory to, uint256[] memory encodedRates) {
         EnumerableMap.AddressToUintMap storage user_subscriptions = _subscriptions[from];
@@ -296,7 +297,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
         encodedSubscribers[encodedRates] = SubActors(author, user);
 
         if(isStream) {
-            streamNFT.safeMint(author, encodedRates);
+            IStreamInteraction(streamNFT).safeMint(author, encodedRates);
         }
 
         emit StreamCreated(user, author, encodedRates);
@@ -313,7 +314,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
         delete encodedSubscribers[encodedRates];
 
         if(isStream) {
-            streamNFT.burn(encodedRates);
+            IStreamInteraction(streamNFT).burn(encodedRates);
         }
 
         emit StreamRevoked(user, author, encodedRates);

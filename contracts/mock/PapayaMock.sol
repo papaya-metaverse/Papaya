@@ -8,7 +8,7 @@ contract PapayaMock is Papaya {
         address CHAIN_PRICE_FEED_,
         address TOKEN_PRICE_FEED_,
         address TOKEN_,
-        IStream streamNFT_
+        address streamNFT_
     ) Papaya(
         CHAIN_PRICE_FEED_,
         TOKEN_PRICE_FEED_,

@@ -1,16 +1,27 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.24;
 
-import { IERC165 } from "@openzeppelin/contracts/utils/utils/introspection/IERC165.sol";
+import { IERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import { IStreamInteraction } from "./IStreamInteraction.sol";
 
 interface IStream is IERC165, IStreamInteraction {
-    error AccessDenied(uint256 tokenId);
+    error AccessDenied();
+    error ERC721InvalidReceiver(address to);
 
     /**
      * @dev Emitted when `tokenId` token is transferred from `from` to `to`.
      */
     event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+
+    /**
+     * @dev Returns the token collection name.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the token collection symbol.
+     */
+    function symbol() external view returns (string memory);
 
     /**
      * @dev Returns the number of tokens in ``owner``'s account.
