@@ -15,7 +15,7 @@ import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/I
 
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
-import { IStream } from "./interfaces/IStream.sol";
+import { IStreamReceiver } from "./interfaces/IStreamReceiver.sol";
 import "./interfaces/IPapaya.sol";
 import "./library/UserLib.sol";
 
@@ -45,7 +45,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
 
     IStream public immutable streamNFT;
     uint32 private _subscriptionId;
-    mapping(uint256 encodeId => address subscriber) public encodedSubscribers;
+    mapping(uint256 encodeId => SubActors) public encodedSubscribers;
     mapping(address account => EnumerableMap.AddressToUintMap) private _subscriptions;
 
     // TODO: v2 should allow multiple subscriptions among 2 users by casting uint256 to storage slot of EnumerableSet
@@ -156,6 +156,10 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
         return _subscriptions[from].tryGet(to);
     }
 
+    function subscriptionActors(uint256 subscriptionId) external view returns (address, address) (
+        return encodedSubscribers[subscriptionId];
+    )
+
     function allSubscriptions(address from) external view returns(address[] memory to, uint256[] memory encodedRates) {
         EnumerableMap.AddressToUintMap storage user_subscriptions = _subscriptions[from];
         to = user_subscriptions.keys();
@@ -249,25 +253,24 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
         emit Liquidated(account, _msgSender());
     }
 
-    function onERC721Received( //onStreamTranfered
-        address operator, //to
+    function onStreamTransfered(
         address from,
-        uint256 tokenId,
-        bytes calldata data
-    ) external onlyStream returns (bytes4) {
+        address to,
+        uint256 tokenId
+    ) external onlyStream {
         if(from != address(0)) {
-            address subscriber = encodedSubscribers[tokenId];
+            address subscriber = encodedSubscribers[tokenId].subscriber;
             (, uint96 outgoingRate, uint32 projectId,) = _decodeRates(tokenId);
 
             _unsubscribeEffects(subscriber, from, tokenId, false);
 
-            Settings storage settings = userSettings[projectId][operator];
+            Settings storage settings = userSettings[projectId][to];
             if (settings.initialized == false) {
                 settings = defaultSettings[projectId];
             }
 
             uint96 incomeRate = uint96(outgoingRate * (FLOOR - settings.projectFee) / FLOOR);
-            _subscribeEffects(subscriber, operator, incomeRate, outgoingRate, projectId, false);
+            _subscribeEffects(subscriber, to, incomeRate, outgoingRate, projectId, false);
         }
     }
 
@@ -290,7 +293,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall, IE
         users[projectOwners[projectId]].increaseIncomeRate(outgoingRate - incomeRate);
         _subscriptions[user].set(author, encodedRates);
 
-        encodedSubscribers[encodedRates] = user;
+        encodedSubscribers[encodedRates] = SubActors(author, user);
 
         if(isStream) {
             streamNFT.safeMint(author, encodedRates);

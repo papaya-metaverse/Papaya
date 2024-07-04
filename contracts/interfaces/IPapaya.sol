@@ -27,6 +27,11 @@ interface IPapaya {
         uint16 projectFee; // of 10k shares
     }
 
+    struct SubActors {
+        address author;
+        address subscriber;
+    }
+
     function rescueFunds(IERC20 token, uint256 amount) external;
 
     function claimProjectId() external;
@@ -39,6 +44,7 @@ interface IPapaya {
 
     function balanceOf(address account) external view returns (uint);
     function subscriptions(address from, address to) external view returns (bool, uint256 encodedRates);
+    function subscriptionActors(uint256 subscriptionId) external view returns (address author, address user);
     function allSubscriptions(address from) external view returns(address[] memory to, uint256[] memory encodedRates);
     function allProjectOwners() external view returns(address[] memory);
 
