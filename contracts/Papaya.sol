@@ -26,8 +26,8 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
     using Address for address payable;
     using EnumerableMap for EnumerableMap.AddressToUintMap;
 
-    uint256 public constant FLOOR = 10000;
-    uint256 public constant MAX_PROTOCOL_FEE = FLOOR * 20 / 100;
+    uint16 public constant FLOOR = 10000;
+    uint16 public constant MAX_PROTOCOL_FEE = FLOOR * 20 / 100;
 
     uint256 public constant APPROX_LIQUIDATE_GAS = 140000;
     uint256 public constant APPROX_SUBSCRIPTION_GAS = 10000;
@@ -40,7 +40,6 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
     uint256 public immutable DECIMALS_SCALE;
 
     uint256 public totalSupply;
-    address[] public projectOwners;
     mapping(address account => UserLib.User) public users;
 
     address public immutable streamNFT;
@@ -50,18 +49,9 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
 
     // TODO: v2 should allow multiple subscriptions among 2 users by casting uint256 to storage slot of EnumerableSet
 
-    mapping(uint256 projectId => Settings) public defaultSettings;
-    mapping(uint256 projectId => mapping(address account => Settings)) public userSettings;
-
-    modifier onlyValidProjectId(uint256 projectId) {
-        if (projectId > projectOwners.length) revert InvalidProjectId(projectId);
-        _;
-    }
-
-    modifier onlyProjectAdmin(uint256 projectId) {
-        if (projectOwners[projectId] != _msgSender()) revert AccessDenied(projectId);
-        _;
-    }
+    mapping(uint80 projectId => address owner) public projectOwners;
+    mapping(uint80 projectId => Settings) public defaultSettings; //Переход с проджект айди на uint80, что является младшей половиной адреса владельца
+    mapping(uint80 projectId => mapping(address account => Settings)) public userSettings;
 
     modifier onlyValidSettings(Settings calldata settings) {
         if (settings.projectFee > MAX_PROTOCOL_FEE) revert WrongPercent();
@@ -117,39 +107,29 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         }
     }
 
-    function claimProjectId() external {
-        emit ProjectIdClaimed(projectOwners.length, _msgSender());
-
-        projectOwners.push(_msgSender());
-    }
-
-    function setDefaultSettings(Settings calldata settings, uint256 projectId)
+    function setDefaultSettings(Settings calldata settings)
         external
-        onlyProjectAdmin(projectId)
-        onlyValidProjectId(projectId)
         onlyValidSettings(settings)
     {
+        uint80 projectId = uint80((uint160(_msgSender()) << 80) >> 80);
+
         defaultSettings[projectId] = settings;
 
         emit SetDefaultSettings(projectId, settings.projectFee);
     }
 
-    function setSettingsForUser(address user, Settings calldata settings, uint256 projectId)
+    function setSettingsForUser(address user, Settings calldata settings)
         external
-        onlyProjectAdmin(projectId)
-        onlyValidProjectId(projectId)
         onlyValidSettings(settings)
     {
+        uint80 projectId = uint80((uint160(_msgSender()) << 80) >> 80);
+
         userSettings[projectId][user] = settings;
         emit SetSettingsForUser(projectId, user, settings.projectFee);
     }
 
     function balanceOf(address account) external view returns (uint256) {
         return uint256(SignedMath.max(users[account].balanceOf(), int(0)));
-    }
-
-    function allProjectOwners() external view returns(address[] memory) {
-        return projectOwners;
     }
 
     function subscriptions(address from, address to) external view returns (bool, uint256 encodedRates) {
@@ -207,9 +187,8 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         _update(_msgSender(), receiver, amount);
     }
 
-    function subscribe(address author, uint96 subscriptionRate, uint256 projectId)
+    function subscribe(address author, uint96 subscriptionRate, uint80 projectId)
         external
-        onlyValidProjectId(projectId)
         onlyNotSender(author)
     {
         (bool success, uint256 encodedRates) = _subscriptions[_msgSender()].tryGet(author);
@@ -225,8 +204,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
             settings = defaultSettings[projectId];
         }
 
-        uint96 incomeRate = uint96(subscriptionRate * (FLOOR - settings.projectFee) / FLOOR);
-        _subscribeEffects(_msgSender(), author, incomeRate, subscriptionRate, projectId, true);
+        _subscribeEffects(_msgSender(), author, subscriptionRate, settings.projectFee, projectId, true);
     }
 
     function unsubscribe(address author) external {
@@ -261,7 +239,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
     ) external onlyStream {
         if(from != address(0)) {
             address subscriber = encodedSubscribers[tokenId].subscriber;
-            (, uint96 outgoingRate, uint32 projectId,) = _decodeRates(tokenId);
+            (uint96 rate, , uint80 projectId,) = _decodeRates(tokenId);
 
             _unsubscribeEffects(subscriber, from, tokenId, false);
 
@@ -270,8 +248,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
                 settings = defaultSettings[projectId];
             }
 
-            uint96 incomeRate = uint96(outgoingRate * (FLOOR - settings.projectFee) / FLOOR);
-            _subscribeEffects(subscriber, to, incomeRate, outgoingRate, projectId, false);
+            _subscribeEffects(subscriber, to, rate, settings.projectFee, projectId, false);
         }
     }
 
@@ -287,11 +264,12 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         return int256(executionPrice) / tokenPrice;
     }
 
-    function _subscribeEffects(address user, address author, uint96 incomeRate, uint96 outgoingRate, uint256 projectId, bool isStream) internal {
-        uint256 encodedRates = _encodeRates(incomeRate, outgoingRate, uint32(projectId), _subscriptionId++);
-        users[user].increaseOutgoingRate(outgoingRate, _liquidationThreshold(_subscriptions[user].length()));
+    function _subscribeEffects(address user, address author, uint96 rate, uint16 fee, uint80 projectId, bool isStream) internal {
+        uint256 encodedRates = _encodeRates(rate, fee, projectId, _subscriptionId++);
+        uint96 incomeRate = rate * (FLOOR - fee) / FLOOR;
+        users[user].increaseOutgoingRate(rate, _liquidationThreshold(_subscriptions[user].length()));
         users[author].increaseIncomeRate(incomeRate);
-        users[projectOwners[projectId]].increaseIncomeRate(outgoingRate - incomeRate);
+        users[projectOwners[projectId]].increaseIncomeRate(rate - incomeRate);
         _subscriptions[user].set(author, encodedRates);
 
         encodedSubscribers[encodedRates] = SubActors(author, user);
@@ -304,11 +282,13 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
     }
 
     function _unsubscribeEffects(address user, address author, uint256 encodedRates, bool isStream) internal {
-        (uint96 incomeRate, uint96 outgoingRate, uint32 projectId, ) = _decodeRates(encodedRates);
+        (uint96 rate, uint16 fee, uint80 projectId, ) = _decodeRates(encodedRates);
         address admin = projectOwners[projectId];
-        users[user].decreaseOutgoingRate(outgoingRate);
+        uint96 incomeRate = rate * (FLOOR - fee) / FLOOR;
+
+        users[user].decreaseOutgoingRate(rate);
         users[author].decreaseIncomeRate(incomeRate, _liquidationThreshold(_subscriptions[author].length()));
-        users[admin].decreaseIncomeRate(outgoingRate - incomeRate, _liquidationThreshold(_subscriptions[admin].length()));
+        users[admin].decreaseIncomeRate(rate - incomeRate, _liquidationThreshold(_subscriptions[admin].length()));
         _subscriptions[user].remove(author);
 
         delete encodedSubscribers[encodedRates];
@@ -341,29 +321,29 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
     }
 
     function _encodeRates(
-        uint96 incomeRate,
-        uint96 outgoingRate,
-        uint32 projectId,
-        uint32 subscriptionId
+        uint96 rate,
+        uint16 fee,
+        uint80 projectId,
+        uint64 subscriptionId
     ) internal pure returns (uint256 encodedRates) {
-        return uint256(incomeRate)
-            | (uint256(outgoingRate) << 96)
-            | (uint256(projectId) << 192)
-            | (uint256(subscriptionId) << 224);
+        return uint256(rate)
+            | (uint256(fee) << 96)
+            | (uint256(projectId) << 112)
+            | (uint256(subscriptionId) << 192);
     }
 
     function _decodeRates(
         uint256 encodedRates
     ) internal pure returns (
-        uint96 incomeRate,
-        uint96 outgoingRate,
-        uint32 projectId,
-        uint32 subscriptionId
+        uint96 rate,
+        uint16 fee,
+        uint80 projectId,
+        uint64 subscriptionId
     ) {
-        incomeRate = uint96(encodedRates);
-        outgoingRate = uint96(encodedRates >> 96);
-        projectId = uint32(encodedRates >> 192);
-        subscriptionId = uint32(encodedRates >> 224);
+        rate = uint96(encodedRates);
+        fee = uint16(encodedRates >> 96);
+        projectId = uint80(encodedRates >> 112);
+        subscriptionId = uint64(encodedRates >> 192);
     }
 
     function _chargeSigner(address signer, address relayer, address token, uint256 amount, bytes calldata /* extraData */) internal override {
