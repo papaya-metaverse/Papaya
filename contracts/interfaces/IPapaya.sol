@@ -54,6 +54,7 @@ interface IPapaya {
     function pay(address receiver, uint256 amount) external;
 
     function subscribe(address author, uint96 subscriptionRate, uint80 projectId) external;
+    function subscribe(address author, uint96 subscriptionRate, uint80 projectId, bytes calldata data) external;
     function unsubscribe(address author) external;
     function liquidate(address account, address[] calldata authors) external;
 }

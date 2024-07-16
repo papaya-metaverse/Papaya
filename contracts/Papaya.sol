@@ -48,9 +48,9 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
     mapping(address account => EnumerableMap.AddressToUintMap) private _subscriptions;
 
     // TODO: v2 should allow multiple subscriptions among 2 users by casting uint256 to storage slot of EnumerableSet
-
+    //Была мысль попытаться вообще перейти на половину адреса, тогда можно отказаться от мапилки с овнерами
     mapping(uint80 projectId => address owner) public projectOwners;
-    mapping(uint80 projectId => Settings) public defaultSettings; //Переход с проджект айди на uint80, что является младшей половиной адреса владельца
+    mapping(uint80 projectId => Settings) public defaultSettings;
     mapping(uint80 projectId => mapping(address account => Settings)) public userSettings;
 
     modifier onlyValidSettings(Settings calldata settings) {
@@ -111,7 +111,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         external
         onlyValidSettings(settings)
     {
-        uint80 projectId = uint80((uint160(_msgSender()) << 80) >> 80);
+        uint80 projectId = uint80(uint160(_msgSender()));
 
         defaultSettings[projectId] = settings;
 
@@ -122,7 +122,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         external
         onlyValidSettings(settings)
     {
-        uint80 projectId = uint80((uint160(_msgSender()) << 80) >> 80);
+        uint80 projectId = uint80(uint160(_msgSender()));
 
         userSettings[projectId][user] = settings;
         emit SetSettingsForUser(projectId, user, settings.projectFee);
@@ -187,8 +187,12 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         _update(_msgSender(), receiver, amount);
     }
 
-    function subscribe(address author, uint96 subscriptionRate, uint80 projectId)
-        external
+    function subscribe(address author, uint96 subscriptionRate, uint80 projectId) external {
+        subscribe(author, subscriptionRate, projectId, msg.data[:0]);
+    }
+
+    function subscribe(address author, uint96 subscriptionRate, uint80 projectId, bytes calldata data)
+        public
         onlyNotSender(author)
     {
         (bool success, uint256 encodedRates) = _subscriptions[_msgSender()].tryGet(author);
@@ -204,7 +208,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
             settings = defaultSettings[projectId];
         }
 
-        _subscribeEffects(_msgSender(), author, subscriptionRate, settings.projectFee, projectId, true);
+        _subscribeEffects(_msgSender(), author, subscriptionRate, settings.projectFee, projectId, data, true);
     }
 
     function unsubscribe(address author) external {
@@ -248,7 +252,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
                 settings = defaultSettings[projectId];
             }
 
-            _subscribeEffects(subscriber, to, rate, settings.projectFee, projectId, false);
+            _subscribeEffects(subscriber, to, rate, settings.projectFee, projectId, msg.data[:0], false);
         }
     }
 
@@ -264,7 +268,15 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         return int256(executionPrice) / tokenPrice;
     }
 
-    function _subscribeEffects(address user, address author, uint96 rate, uint16 fee, uint80 projectId, bool isStream) internal {
+    function _subscribeEffects(
+        address user,
+        address author,
+        uint96 rate,
+        uint16 fee,
+        uint80 projectId,
+        bytes calldata data,
+        bool isStream
+    ) internal {
         uint256 encodedRates = _encodeRates(rate, fee, projectId, _subscriptionId++);
         uint96 incomeRate = rate * (FLOOR - fee) / FLOOR;
         users[user].increaseOutgoingRate(rate, _liquidationThreshold(_subscriptions[user].length()));
@@ -275,7 +287,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         encodedSubscribers[encodedRates] = SubActors(author, user);
 
         if(isStream) {
-            IStreamInteraction(streamNFT).safeMint(author, encodedRates);
+            IStreamInteraction(streamNFT).safeMint(author, encodedRates, data);
         }
 
         emit StreamCreated(user, author, encodedRates);

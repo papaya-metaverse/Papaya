@@ -4,7 +4,7 @@ pragma solidity 0.8.24;
 interface IStreamRevoker {
     error InvalidStreamRevoker();
 
-    function onStreamRevoked(
+    function onERC721Removed(
         address from,
         address to,
         uint256 tokenId
