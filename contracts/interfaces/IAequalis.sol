@@ -5,5 +5,6 @@ interface IAequalis {
     error InvalidAction();
     error WrongSender();
 
+    function update(address account) external;
     function withdraw() external;
 }
