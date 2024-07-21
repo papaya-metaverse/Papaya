@@ -46,6 +46,15 @@ contract Aequalis is IAequalis, EIP712, BySig {
         IPapaya(PAPAYA).pay(_msgSender(), amount);
     }
 
+    function update(address account) external {
+        (bool status, ) = IPapaya(PAPAYA).subscriptions(account, address(this));
+
+        if(users[account] > 0 && !status) {
+            users[account] = 0;
+            usersCount--;
+        }
+    }
+
     function _msgSender() internal view override(BySig) returns (address) {
         return super._msgSender();
     }
