@@ -66,6 +66,7 @@ module.exports = {
         arbitrumNova: `${process.env.ARBITRUM_API_KEY}` || '',
         arbitrumOne: `${process.env.ARBITRUM_API_KEY}` || '',
         arbitrumSepolia: `${process.env.ARBITRUM_API_KEY}` || '',
+        sei: 'ANY',
     },
       customChains: [
             {
@@ -82,6 +83,14 @@ module.exports = {
                 urls: {
                     apiURL: "https://api.scrollscan.com/api",
                     browserURL: "https://scrollscan.com"
+                }
+            },
+            {
+                network: "sei",
+                chainId: 1329,
+                urls: {
+                    apiURL: "https://seitrace.com/pacific-1/api",
+                    browserURL: "https://seitrace.com"
                 }
             }
         ]
@@ -182,6 +191,11 @@ module.exports = {
       ethereum: {
         chainId: 1,
         url: `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_ETHEREUM_KEY}`,
+        accounts: process.env.DEPLOYER_PRIVATE_KEY !== undefined ? [`${process.env.DEPLOYER_PRIVATE_KEY}`] : ['0000000000000000000000000000000000000000000000000000000000000001'],
+      },
+      sei: {
+        chainId: 1329,
+        url: 'https://evm-rpc.sei-apis.com',
         accounts: process.env.DEPLOYER_PRIVATE_KEY !== undefined ? [`${process.env.DEPLOYER_PRIVATE_KEY}`] : ['0000000000000000000000000000000000000000000000000000000000000001'],
       }
     },
