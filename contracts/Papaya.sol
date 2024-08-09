@@ -14,6 +14,8 @@ import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/I
 
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
+import { IStreamReceiver } from "./interfaces/IStreamReceiver.sol";
+import { IStreamInteraction } from "./interfaces/IStreamInteraction.sol";
 import "./interfaces/IPapaya.sol";
 import "./library/UserLib.sol";
 
@@ -24,8 +26,8 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
     using Address for address payable;
     using EnumerableMap for EnumerableMap.AddressToUintMap;
 
-    uint256 public constant FLOOR = 10000;
-    uint256 public constant MAX_PROTOCOL_FEE = FLOOR * 20 / 100;
+    uint16 public constant FLOOR = 10000;
+    uint16 public constant MAX_PROTOCOL_FEE = FLOOR * 20 / 100;
 
     uint256 public constant APPROX_LIQUIDATE_GAS = 140000;
     uint256 public constant APPROX_SUBSCRIPTION_GAS = 10000;
@@ -38,23 +40,18 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
     uint256 public immutable DECIMALS_SCALE;
 
     uint256 public totalSupply;
-    address[] public projectOwners;
     mapping(address account => UserLib.User) public users;
+
+    address public immutable streamNFT;
+    uint32 private _subscriptionId;
+    mapping(uint256 encodeId => SubActors) public encodedSubscribers;
     mapping(address account => EnumerableMap.AddressToUintMap) private _subscriptions;
+
     // TODO: v2 should allow multiple subscriptions among 2 users by casting uint256 to storage slot of EnumerableSet
-
-    mapping(uint256 projectId => Settings) public defaultSettings;
-    mapping(uint256 projectId => mapping(address account => Settings)) public userSettings;
-
-    modifier onlyValidProjectId(uint256 projectId) {
-        if (projectId > projectOwners.length) revert InvalidProjectId(projectId);
-        _;
-    }
-
-    modifier onlyProjectAdmin(uint256 projectId) {
-        if (projectOwners[projectId] != _msgSender()) revert AccessDenied(projectId);
-        _;
-    }
+    //Была мысль попытаться вообще перейти на половину адреса, тогда можно отказаться от мапилки с овнерами
+    mapping(uint80 projectId => address owner) public projectOwners;
+    mapping(uint80 projectId => Settings) public defaultSettings;
+    mapping(uint80 projectId => mapping(address account => Settings)) public userSettings;
 
     modifier onlyValidSettings(Settings calldata settings) {
         if (settings.projectFee > MAX_PROTOCOL_FEE) revert WrongPercent();
@@ -66,10 +63,16 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         _;
     }
 
+    modifier onlyStream() {
+        if (_msgSender() != address(streamNFT)) revert NotLegal();
+        _;
+    }
+
     constructor(
         address CHAIN_PRICE_FEED_,
         address TOKEN_PRICE_FEED_,
-        address TOKEN_
+        address TOKEN_,
+        address streamNFT_
     )
         Ownable(_msgSender())
         EIP712(type(Papaya).name, "1")
@@ -78,6 +81,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         TOKEN_PRICE_FEED = AggregatorV3Interface(TOKEN_PRICE_FEED_);
         TOKEN = IERC20(TOKEN_);
         DECIMALS_SCALE = 10 ** (18 - IERC20Metadata(TOKEN_).decimals());
+        streamNFT = streamNFT_;
     }
 
     function name() external view returns (string memory) {
@@ -103,29 +107,23 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         }
     }
 
-    function claimProjectId() external {
-        emit ProjectIdClaimed(projectOwners.length, _msgSender());
-
-        projectOwners.push(_msgSender());
-    }
-
-    function setDefaultSettings(Settings calldata settings, uint256 projectId)
+    function setDefaultSettings(Settings calldata settings)
         external
-        onlyProjectAdmin(projectId)
-        onlyValidProjectId(projectId)
         onlyValidSettings(settings)
     {
+        uint80 projectId = uint80(uint160(_msgSender()));
+
         defaultSettings[projectId] = settings;
 
         emit SetDefaultSettings(projectId, settings.projectFee);
     }
 
-    function setSettingsForUser(address user, Settings calldata settings, uint256 projectId)
+    function setSettingsForUser(address user, Settings calldata settings)
         external
-        onlyProjectAdmin(projectId)
-        onlyValidProjectId(projectId)
         onlyValidSettings(settings)
     {
+        uint80 projectId = uint80(uint160(_msgSender()));
+
         userSettings[projectId][user] = settings;
         emit SetSettingsForUser(projectId, user, settings.projectFee);
     }
@@ -134,12 +132,13 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         return uint256(SignedMath.max(users[account].balanceOf(), int(0)));
     }
 
-    function allProjectOwners() external view returns(address[] memory) {
-        return projectOwners;
-    }
-
     function subscriptions(address from, address to) external view returns (bool, uint256 encodedRates) {
         return _subscriptions[from].tryGet(to);
+    }
+
+    function subscriptionActors(uint256 subscriptionId) external view returns (address author, address user) {
+        author = encodedSubscribers[subscriptionId].author;
+        user = encodedSubscribers[subscriptionId].subscriber;
     }
 
     function allSubscriptions(address from) external view returns(address[] memory to, uint256[] memory encodedRates) {
@@ -188,15 +187,18 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         _update(_msgSender(), receiver, amount);
     }
 
-    function subscribe(address author, uint96 subscriptionRate, uint256 projectId)
-        external
-        onlyValidProjectId(projectId)
+    function subscribe(address author, uint96 subscriptionRate, uint80 projectId) external {
+        subscribe(author, subscriptionRate, projectId, msg.data[:0]);
+    }
+
+    function subscribe(address author, uint96 subscriptionRate, uint80 projectId, bytes calldata data)
+        public
         onlyNotSender(author)
     {
         (bool success, uint256 encodedRates) = _subscriptions[_msgSender()].tryGet(author);
         if (success) {
             // If already subscribed, unsubscribe to be able to subscribe again
-            _unsubscribeEffects(_msgSender(), author, encodedRates);
+            _unsubscribeEffects(_msgSender(), author, encodedRates, true);
         }
 
         if (_subscriptions[_msgSender()].length() == SUBSCRIPTION_THRESHOLD) revert ExcessOfSubscriptions();
@@ -206,61 +208,106 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
             settings = defaultSettings[projectId];
         }
 
-        uint96 incomeRate = uint96(subscriptionRate * (FLOOR - settings.projectFee) / FLOOR);
-        _subscribeEffects(_msgSender(), author, incomeRate, subscriptionRate, projectId);
+        _subscribeEffects(_msgSender(), author, subscriptionRate, settings.projectFee, projectId, data, true);
     }
 
     function unsubscribe(address author) external {
         (bool success, uint256 encodedRates) = _subscriptions[_msgSender()].tryGet(author);
         if (!success) revert NotSubscribed();
 
-        _unsubscribeEffects(_msgSender(), author, encodedRates);
+        _unsubscribeEffects(_msgSender(), author, encodedRates, true);
     }
 
-    function liquidate(address account) external onlyNotSender(account) {
+    function liquidate(address account, address[] calldata authors) external onlyNotSender(account) {
         UserLib.User storage user = users[account];
-        if (!user.isLiquidatable(_liquidationThreshold(account))) revert NotLiquidatable();
+        if (!user.isLiquidatable(_liquidationThreshold(_subscriptions[account].length()))) revert NotLiquidatable();
 
         EnumerableMap.AddressToUintMap storage user_subscriptions = _subscriptions[account];
-        for (uint256 i = user_subscriptions.length(); i > 0; i--) {
-            (address author, uint256 encodedRates) = user_subscriptions.at(i - 1);
-            _unsubscribeEffects(account, author, encodedRates);
+        for (uint256 i; i < authors.length; i++) {
+            uint256 encodedRates = user_subscriptions.get(authors[i]);
+            _unsubscribeEffects(account, authors[i], encodedRates, true);
         }
-        int256 balance = user.drainBalance(users[_msgSender()]);
-        emit Transfer(account, _msgSender(), uint256(SignedMath.max(int256(0), balance)));
 
+        if (user.isLiquidatable(_liquidationThreshold(_subscriptions[account].length()))) revert NotLegal();
+
+        int256 balance = user.drainBalance(users[_msgSender()], _liquidationThreshold(authors.length));
+
+        emit Transfer(account, _msgSender(), uint256(SignedMath.max(int256(0), balance)));
         emit Liquidated(account, _msgSender());
     }
 
-    function _liquidationThreshold(address user) internal view returns (int256) {
+    function onStreamTransfered(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external onlyStream {
+        if(from != address(0)) {
+            address subscriber = encodedSubscribers[tokenId].subscriber;
+            (uint96 rate, , uint80 projectId,) = _decodeRates(tokenId);
+
+            _unsubscribeEffects(subscriber, from, tokenId, false);
+
+            Settings storage settings = userSettings[projectId][to];
+            if (settings.initialized == false) {
+                settings = defaultSettings[projectId];
+            }
+
+            _subscribeEffects(subscriber, to, rate, settings.projectFee, projectId, msg.data[:0], false);
+        }
+    }
+
+    function _liquidationThreshold(uint256 subscriptionAmount) internal view returns (int256) {
         (, int256 tokenPrice, , , ) = TOKEN_PRICE_FEED.latestRoundData();
         (, int256 coinPrice, , , ) = COIN_PRICE_FEED.latestRoundData();
 
         uint256 expectedNativeAssetCost = _gasPrice() *
-            (APPROX_LIQUIDATE_GAS + APPROX_SUBSCRIPTION_GAS * _subscriptions[user].length());
+            (APPROX_LIQUIDATE_GAS + APPROX_SUBSCRIPTION_GAS * subscriptionAmount);
 
         uint256 executionPrice = expectedNativeAssetCost * uint256(coinPrice);
 
         return int256(executionPrice) / tokenPrice;
     }
 
-    function _subscribeEffects(address user, address author, uint96 incomeRate, uint96 outgoingRate, uint256 projectId) internal {
-        uint256 encodedRates = _encodeRates(incomeRate, outgoingRate, projectId);
-        users[user].increaseOutgoingRate(outgoingRate, _liquidationThreshold(user));
+    function _subscribeEffects(
+        address user,
+        address author,
+        uint96 rate,
+        uint16 fee,
+        uint80 projectId,
+        bytes calldata data,
+        bool isStream
+    ) internal {
+        uint256 encodedRates = _encodeRates(rate, fee, projectId, _subscriptionId++);
+        uint96 incomeRate = rate * (FLOOR - fee) / FLOOR;
+        users[user].increaseOutgoingRate(rate, _liquidationThreshold(_subscriptions[user].length()));
         users[author].increaseIncomeRate(incomeRate);
-        users[projectOwners[projectId]].increaseIncomeRate(outgoingRate - incomeRate);
+        users[projectOwners[projectId]].increaseIncomeRate(rate - incomeRate);
         _subscriptions[user].set(author, encodedRates);
+
+        encodedSubscribers[encodedRates] = SubActors(author, user);
+
+        if(isStream) {
+            IStreamInteraction(streamNFT).safeMint(author, encodedRates, data);
+        }
 
         emit StreamCreated(user, author, encodedRates);
     }
 
-    function _unsubscribeEffects(address user, address author, uint256 encodedRates) internal {
-        (uint96 incomeRate, uint96 outgoingRate, uint256 projectId) = _decodeRates(encodedRates);
+    function _unsubscribeEffects(address user, address author, uint256 encodedRates, bool isStream) internal {
+        (uint96 rate, uint16 fee, uint80 projectId, ) = _decodeRates(encodedRates);
         address admin = projectOwners[projectId];
-        users[user].decreaseOutgoingRate(outgoingRate);
-        users[author].decreaseIncomeRate(incomeRate, _liquidationThreshold(author));
-        users[admin].decreaseIncomeRate(outgoingRate - incomeRate, _liquidationThreshold(admin));
+        uint96 incomeRate = rate * (FLOOR - fee) / FLOOR;
+
+        users[user].decreaseOutgoingRate(rate);
+        users[author].decreaseIncomeRate(incomeRate, _liquidationThreshold(_subscriptions[author].length()));
+        users[admin].decreaseIncomeRate(rate - incomeRate, _liquidationThreshold(_subscriptions[admin].length()));
         _subscriptions[user].remove(author);
+
+        delete encodedSubscribers[encodedRates];
+
+        if(isStream) {
+            IStreamInteraction(streamNFT).burn(encodedRates);
+        }
 
         emit StreamRevoked(user, author, encodedRates);
     }
@@ -272,7 +319,7 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
             totalSupply += amount;
         }
         else {
-            users[from].decreaseBalance(amount, _liquidationThreshold(from));
+            users[from].decreaseBalance(amount, _liquidationThreshold(_subscriptions[from].length()));
         }
 
         if (to == address(0)) {
@@ -285,16 +332,30 @@ contract Papaya is IPapaya, EIP712, Ownable, PermitAndCall, BySig, Multicall {
         emit Transfer(from, to, amount);
     }
 
-    function _encodeRates(uint96 incomeRate, uint96 outgoingRate, uint256 projectId) internal pure returns (uint256 encodedRates) {
-        return uint256(incomeRate)
-            | (uint256(outgoingRate) << 96)
-            | (uint256(projectId) << 192);
+    function _encodeRates(
+        uint96 rate,
+        uint16 fee,
+        uint80 projectId,
+        uint64 subscriptionId
+    ) internal pure returns (uint256 encodedRates) {
+        return uint256(rate)
+            | (uint256(fee) << 96)
+            | (uint256(projectId) << 112)
+            | (uint256(subscriptionId) << 192);
     }
 
-    function _decodeRates(uint256 encodedRates) internal pure returns (uint96 incomeRate, uint96 outgoingRate, uint256 projectId) {
-        incomeRate = uint96(encodedRates);
-        outgoingRate = uint96(encodedRates >> 96);
-        projectId = encodedRates >> 192;
+    function _decodeRates(
+        uint256 encodedRates
+    ) internal pure returns (
+        uint96 rate,
+        uint16 fee,
+        uint80 projectId,
+        uint64 subscriptionId
+    ) {
+        rate = uint96(encodedRates);
+        fee = uint16(encodedRates >> 96);
+        projectId = uint80(encodedRates >> 112);
+        subscriptionId = uint64(encodedRates >> 192);
     }
 
     function _chargeSigner(address signer, address relayer, address token, uint256 amount, bytes calldata /* extraData */) internal override {

@@ -27,11 +27,15 @@ interface IPapaya {
         uint16 projectFee; // of 10k shares
     }
 
+    struct SubActors {
+        address author;
+        address subscriber;
+    }
+
     function rescueFunds(IERC20 token, uint256 amount) external;
 
-    function claimProjectId() external;
-    function setDefaultSettings(Settings calldata settings, uint256 projectId) external;
-    function setSettingsForUser(address user, Settings calldata settings, uint256 projectId) external;
+    function setDefaultSettings(Settings calldata settings) external;
+    function setSettingsForUser(address user, Settings calldata settings) external;
 
     function name() external view returns (string memory);
     function symbol() external view returns (string memory);
@@ -39,8 +43,8 @@ interface IPapaya {
 
     function balanceOf(address account) external view returns (uint);
     function subscriptions(address from, address to) external view returns (bool, uint256 encodedRates);
+    function subscriptionActors(uint256 subscriptionId) external view returns (address author, address user);
     function allSubscriptions(address from) external view returns(address[] memory to, uint256[] memory encodedRates);
-    function allProjectOwners() external view returns(address[] memory);
 
     function deposit(uint256 amount, bool isPermit2) external;
     function depositFor(uint256 amount, address user, bool isPermit2) external;
@@ -49,7 +53,8 @@ interface IPapaya {
 
     function pay(address receiver, uint256 amount) external;
 
-    function subscribe(address author, uint96 subscriptionRate, uint256 projectId) external;
+    function subscribe(address author, uint96 subscriptionRate, uint80 projectId) external;
+    function subscribe(address author, uint96 subscriptionRate, uint80 projectId, bytes calldata data) external;
     function unsubscribe(address author) external;
-    function liquidate(address account) external;
+    function liquidate(address account, address[] calldata authors) external;
 }
